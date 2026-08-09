@@ -1,3 +1,5 @@
 myenv
 .venv
 aptos2019-blindness-detection.zip
+data/
+*.zip
