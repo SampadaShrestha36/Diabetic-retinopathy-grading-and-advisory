@@ -52,6 +52,12 @@ def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
     best_qwk = -1
     epochs_no_improve = 0
 
+    # Reduces LR by half if val QWK hasn't improved for 2 epochs - often
+    # squeezes out extra gains right before you'd otherwise plateau/stop.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=2
+    )
+
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -68,8 +74,11 @@ def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
             running_loss += loss.item()
 
         val_qwk = evaluate(model, val_loader)
+        current_lr = optimizer.param_groups[0]["lr"]
         print(f"[{stage_name}] Epoch {epoch+1}/{num_epochs} "
-              f"- loss: {running_loss/len(train_loader):.4f} - val QWK: {val_qwk:.4f}")
+              f"- loss: {running_loss/len(train_loader):.4f} - val QWK: {val_qwk:.4f} - lr: {current_lr:.2e}")
+
+        scheduler.step(val_qwk)
 
         if val_qwk > best_qwk:
             best_qwk = val_qwk
@@ -86,16 +95,27 @@ def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
 
 if __name__ == "__main__":
     # ---- Data ----
-    train_dataset = DRDataset("labels/aptos_labels.csv", transform=get_train_transforms())
-    val_dataset = DRDataset("labels/ddr_val_labels.csv", transform=get_eval_transforms())
-    idrid_test_dataset = DRDataset("labels/idrid_test_labels.csv", transform=get_eval_transforms())
+    # Using an APTOS-only train/val split since DDR and IDRiD aren't
+    # downloaded yet. Once you have DDR/IDRiD, swap val_dataset to DDR
+    # and add IDRiD back in as a held-out generalization test.
+    import pandas as pd
+    from sklearn.model_selection import train_test_split
+
+    full_df = pd.read_csv("labels/aptos_labels.csv")
+    train_df, val_df = train_test_split(
+        full_df, test_size=0.15, stratify=full_df["label"], random_state=42
+    )
+    train_df.to_csv("labels/aptos_train_split.csv", index=False)
+    val_df.to_csv("labels/aptos_val_split.csv", index=False)
+
+    train_dataset = DRDataset("labels/aptos_train_split.csv", transform=get_train_transforms())
+    val_dataset = DRDataset("labels/aptos_val_split.csv", transform=get_eval_transforms())
 
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
-    idrid_test_loader = DataLoader(idrid_test_dataset, batch_size=32, shuffle=False, num_workers=4)
 
-    # ---- Class weights for imbalance ----
-    class_weights = get_class_weights("labels/aptos_labels.csv").to(device)
+    # ---- Class weights for imbalance (computed on the training split only) ----
+    class_weights = get_class_weights("labels/aptos_train_split.csv").to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     # ---- Model ----
@@ -108,15 +128,13 @@ if __name__ == "__main__":
                                 criterion, num_epochs=5, stage_name="stage1")
 
     # ---- Stage 2: unfreeze deeper layers, lower LR across all trainable params ----
-    model = unfreeze_backbone(model, unfreeze_from_layer="layer3")
+    model = unfreeze_backbone(model, unfreeze_from_layer="layer2")
     optimizer_stage2 = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5
     )
     model, best_qwk = train_one_stage(model, train_loader, val_loader, optimizer_stage2,
-                                       criterion, num_epochs=15, stage_name="stage2")
+                                       criterion, num_epochs=30, stage_name="stage2", patience=6)
 
     print(f"Best validation QWK: {best_qwk:.4f}")
-
-    # ---- Final check: generalization to South Asian population (IDRiD) ----
-    idrid_qwk = evaluate(model, idrid_test_loader)
-    print(f"IDRiD held-out test QWK: {idrid_qwk:.4f}")
+    print("Note: this run used an APTOS-only val split. Add DDR/IDRiD later "
+          "for a cleaner validation set and a true cross-population test.")

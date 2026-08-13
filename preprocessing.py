@@ -47,10 +47,18 @@ def resize_image(image, size=224):
     return cv2.resize(image, (size, size), interpolation=cv2.INTER_AREA)
 
 
-def is_low_quality(image, blur_threshold=100.0, dark_threshold=20.0):
+def is_low_quality(image, blur_threshold=5.0, dark_threshold=20.0):
     """
     Flags an image as low quality if it's too blurry or too dark to be
     gradable. Returns True if the image should be EXCLUDED.
+
+    blur_threshold was recalibrated based on the actual APTOS 2019 blur
+    score distribution (Laplacian variance on cropped images): min 3.26,
+    5th percentile 5.91, median 20.36, max 113.03. Fundus images are
+    naturally soft compared to typical sharp photos, so a generic
+    threshold of 100 was excluding almost the entire dataset. 5.0 sits
+    just below the 5th percentile, filtering only genuine outliers near
+    the bottom of the range instead of the normal spread of the data.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
@@ -69,7 +77,11 @@ def is_low_quality(image, blur_threshold=100.0, dark_threshold=20.0):
 
 def preprocess_image(image_path, size=224):
     """
-    Full pipeline for one image: load -> quality check -> crop -> CLAHE -> resize.
+    Full pipeline for one image: load -> crop -> quality check -> CLAHE -> resize.
+    Cropping happens BEFORE the quality check, because the black border
+    around the retina has near-zero pixel variance and falsely triggers
+    the blur check if checked first. Quality must be judged on the actual
+    retina, not the padding around it.
     Returns None if the image fails the quality check (so it gets skipped).
     """
     image = cv2.imread(image_path)
@@ -77,10 +89,11 @@ def preprocess_image(image_path, size=224):
         return None
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+    image = circular_crop(image)
+
     if is_low_quality(image):
         return None
 
-    image = circular_crop(image)
     image = apply_clahe(image)
     image = resize_image(image, size=size)
 

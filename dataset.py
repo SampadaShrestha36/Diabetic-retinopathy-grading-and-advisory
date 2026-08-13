@@ -48,20 +48,35 @@ class DRDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image = preprocess_image(row["filepath"], size=self.image_size)
+        original_idx = idx
+        attempts = 0
+        max_attempts = 20  # if 20 images in a row all fail, something is systematically wrong
 
-        if image is None:
-            # Skip bad images by grabbing the next one instead
-            return self.__getitem__((idx + 1) % len(self.df))
+        while attempts < max_attempts:
+            row = self.df.iloc[idx]
+            image = preprocess_image(row["filepath"], size=self.image_size)
 
-        if self.transform:
-            image = self.transform(image)
-        else:
-            image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+            if image is not None:
+                if self.transform:
+                    image = self.transform(image)
+                else:
+                    image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+                label = int(row["label"])
+                return image, label
 
-        label = int(row["label"])
-        return image, label
+            # This image failed - try the next one instead
+            idx = (idx + 1) % len(self.df)
+            attempts += 1
+
+        # If we get here, 20 consecutive images all failed - that's not
+        # normal and means preprocessing thresholds or file paths are
+        # wrong, not that these specific images are bad.
+        raise RuntimeError(
+            f"20 consecutive images failed preprocessing starting at index "
+            f"{original_idx} (file: {self.df.iloc[original_idx]['filepath']}). "
+            f"This usually means is_low_quality() thresholds are too strict, "
+            f"or filepaths in the CSV are wrong. Check preprocessing.py."
+        )
 
 
 # ---------- Example usage ----------
