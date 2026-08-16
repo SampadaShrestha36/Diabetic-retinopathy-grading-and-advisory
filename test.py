@@ -109,7 +109,12 @@ def print_report(metrics, y_true, y_pred):
 
 
 if __name__ == "__main__":
-    test_csv = sys.argv[1] if len(sys.argv) > 1 else "labels/aptos_val_split.csv"
+    # Defaults to the combined APTOS+DDR validation split. Point it at
+    # labels/ddr_labels.csv or labels/aptos_labels.csv directly if you want
+    # to check performance on one dataset in isolation, or at
+    # labels/idrid_test_labels.csv once IDRiD is downloaded for a true
+    # cross-population held-out test.
+    test_csv = sys.argv[1] if len(sys.argv) > 1 else "labels/combined_val_split.csv"
     checkpoint = "best_model_stage2.pt"
 
     print(f"Loading model from {checkpoint}...")

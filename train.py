@@ -95,27 +95,34 @@ def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
 
 if __name__ == "__main__":
     # ---- Data ----
-    # Using an APTOS-only train/val split since DDR and IDRiD aren't
-    # downloaded yet. Once you have DDR/IDRiD, swap val_dataset to DDR
-    # and add IDRiD back in as a held-out generalization test.
+    # Combines APTOS + DDR into one pool for training, since both use the
+    # same 5-class ICDR grading scale. Stratified 85/15 split for validation.
+    # Once IDRiD is downloaded, add it back as a completely separate,
+    # untouched held-out test set (never mixed into this training pool).
     import pandas as pd
     from sklearn.model_selection import train_test_split
 
-    full_df = pd.read_csv("labels/aptos_labels.csv")
-    train_df, val_df = train_test_split(
-        full_df, test_size=0.15, stratify=full_df["label"], random_state=42
-    )
-    train_df.to_csv("labels/aptos_train_split.csv", index=False)
-    val_df.to_csv("labels/aptos_val_split.csv", index=False)
+    aptos_df = pd.read_csv("labels/aptos_labels.csv")
+    ddr_df = pd.read_csv("labels/ddr_labels.csv")
+    combined_df = pd.concat([aptos_df, ddr_df], ignore_index=True)
 
-    train_dataset = DRDataset("labels/aptos_train_split.csv", transform=get_train_transforms())
-    val_dataset = DRDataset("labels/aptos_val_split.csv", transform=get_eval_transforms())
+    print(f"APTOS: {len(aptos_df)} images | DDR: {len(ddr_df)} images | "
+          f"Combined: {len(combined_df)} images")
+
+    train_df, val_df = train_test_split(
+        combined_df, test_size=0.15, stratify=combined_df["label"], random_state=42
+    )
+    train_df.to_csv("labels/combined_train_split.csv", index=False)
+    val_df.to_csv("labels/combined_val_split.csv", index=False)
+
+    train_dataset = DRDataset("labels/combined_train_split.csv", transform=get_train_transforms())
+    val_dataset = DRDataset("labels/combined_val_split.csv", transform=get_eval_transforms())
 
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
 
     # ---- Class weights for imbalance (computed on the training split only) ----
-    class_weights = get_class_weights("labels/aptos_train_split.csv").to(device)
+    class_weights = get_class_weights("labels/combined_train_split.csv").to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     # ---- Model ----
@@ -136,5 +143,5 @@ if __name__ == "__main__":
                                        criterion, num_epochs=30, stage_name="stage2", patience=6)
 
     print(f"Best validation QWK: {best_qwk:.4f}")
-    print("Note: this run used an APTOS-only val split. Add DDR/IDRiD later "
-          "for a cleaner validation set and a true cross-population test.")
+    print("Note: this run used a combined APTOS+DDR train/val split. Add IDRiD "
+          "as a separate held-out test set for a true cross-population evaluation.")

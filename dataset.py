@@ -39,10 +39,11 @@ def get_eval_transforms():
 
 
 class DRDataset(Dataset):
-    def __init__(self, csv_path, transform=None, image_size=224):
+    def __init__(self, csv_path, transform=None, image_size=224, use_ben_graham=False):
         self.df = pd.read_csv(csv_path)
         self.transform = transform
         self.image_size = image_size
+        self.use_ben_graham = use_ben_graham
 
     def __len__(self):
         return len(self.df)
@@ -54,7 +55,8 @@ class DRDataset(Dataset):
 
         while attempts < max_attempts:
             row = self.df.iloc[idx]
-            image = preprocess_image(row["filepath"], size=self.image_size)
+            image = preprocess_image(row["filepath"], size=self.image_size,
+                                      use_ben_graham=self.use_ben_graham)
 
             if image is not None:
                 if self.transform:

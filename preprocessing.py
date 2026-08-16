@@ -42,6 +42,23 @@ def apply_clahe(image):
     return enhanced_rgb
 
 
+def ben_graham_preprocess(image, sigma_fraction=10):
+    """
+    Ben Graham's preprocessing method (used by most top-scoring solutions
+    in the original Kaggle DR competition). Subtracts a heavily-blurred
+    version of the image from itself, weighted, which cancels out uneven
+    lighting across the retina and makes lesions (microaneurysms,
+    hemorrhages, exudates) stand out much more clearly than CLAHE alone.
+    """
+    height, width = image.shape[:2]
+    sigma = width / sigma_fraction
+
+    blurred = cv2.GaussianBlur(image, (0, 0), sigma)
+    enhanced = cv2.addWeighted(image, 4, blurred, -4, 128)
+
+    return enhanced
+
+
 def resize_image(image, size=224):
     """Resizes to a fixed size expected by ResNet-50."""
     return cv2.resize(image, (size, size), interpolation=cv2.INTER_AREA)
@@ -75,13 +92,18 @@ def is_low_quality(image, blur_threshold=5.0, dark_threshold=20.0):
     return False
 
 
-def preprocess_image(image_path, size=224):
+def preprocess_image(image_path, size=224, use_ben_graham=False):
     """
-    Full pipeline for one image: load -> crop -> quality check -> CLAHE -> resize.
+    Full pipeline for one image: load -> crop -> quality check -> enhance -> resize.
     Cropping happens BEFORE the quality check, because the black border
     around the retina has near-zero pixel variance and falsely triggers
     the blur check if checked first. Quality must be judged on the actual
     retina, not the padding around it.
+
+    use_ben_graham: if True, uses Ben Graham's local-average-subtraction
+    method instead of CLAHE. Test both on a small sample (see
+    preview_preprocessing.py) before choosing one for a full training run.
+
     Returns None if the image fails the quality check (so it gets skipped).
     """
     image = cv2.imread(image_path)
@@ -94,7 +116,11 @@ def preprocess_image(image_path, size=224):
     if is_low_quality(image):
         return None
 
-    image = apply_clahe(image)
+    if use_ben_graham:
+        image = ben_graham_preprocess(image)
+    else:
+        image = apply_clahe(image)
+
     image = resize_image(image, size=size)
 
     return image

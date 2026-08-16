@@ -25,13 +25,21 @@ def prepare_aptos(csv_path, image_dir, out_csv):
     print(f"APTOS: {len(df)} images written to {out_csv}")
 
 
-# # ---------- DDR ----------
-# def prepare_ddr(txt_path, image_dir, out_csv):
-#     # DDR label files are usually space-separated: filename label
-#     df = pd.read_csv(txt_path, sep=" ", header=None, names=["filename", "label"])
-#     df["filepath"] = df["filename"].apply(lambda x: os.path.join(image_dir, x))
-#     df[["filepath", "label"]].to_csv(out_csv, index=False)
-#     print(f"DDR: {len(df)} images written to {out_csv}")
+# ---------- DDR (mariaherrerot Kaggle preprocessed version) ----------
+def prepare_ddr(csv_path, image_dir, out_csv):
+    # This Kaggle mirror uses the same format as APTOS: id_code, diagnosis
+    df = pd.read_csv(csv_path)
+    df["filepath"] = df["id_code"].apply(lambda x: os.path.join(image_dir, x))
+    df["label"] = df["diagnosis"]
+
+    before = len(df)
+    df = df[df["filepath"].apply(os.path.exists)]
+    dropped = before - len(df)
+    if dropped > 0:
+        print(f"WARNING: {dropped} DDR images missing/corrupted and skipped")
+
+    df[["filepath", "label"]].to_csv(out_csv, index=False)
+    print(f"DDR: {len(df)} images written to {out_csv}")
 
 
 # # ---------- IDRiD ----------
@@ -54,18 +62,15 @@ if __name__ == "__main__":
         out_csv="labels/aptos_labels.csv",
     )
 
-    # # DDR: check the extracted folder - it's usually split into
-    # # DDR-dataset/DR_grading/train, valid, test, each with its own txt label file
-    # prepare_ddr(
-    #     txt_path="data/ddr/DR_grading/train.txt",
-    #     image_dir="data/ddr/DR_grading/train",
-    #     out_csv="labels/ddr_train_labels.csv",
-    # )
-    # prepare_ddr(
-    #     txt_path="data/ddr/DR_grading/valid.txt",
-    #     image_dir="data/ddr/DR_grading/valid",
-    #     out_csv="labels/ddr_val_labels.csv",
-    # )
+    # DDR (mariaherrerot Kaggle mirror): single DR_grading.csv covering all
+    # 12,522 images. Update image_dir below once you've confirmed the actual
+    # extracted folder structure with `Get-ChildItem -Recurse data\ddr\ -Depth 2`
+    # - it's likely nested as data/ddr/DR_grading/DR_grading/
+    prepare_ddr(
+        csv_path="data/ddr/DR_grading.csv",
+        image_dir="data/ddr/DR_grading/DR_grading",
+        out_csv="labels/ddr_labels.csv",
+    )
 
     # # IDRiD: keep train and test SEPARATE - test is your held-out generalization set
     # prepare_idrid(
