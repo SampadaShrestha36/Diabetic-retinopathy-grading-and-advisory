@@ -3,6 +3,7 @@ Step 6: Training loop.
 Two-stage fine-tuning + weighted loss (for class imbalance) + QWK tracking.
 """
 
+import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -47,18 +48,41 @@ def evaluate(model, loader):
 
 
 def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
-                     num_epochs, stage_name, patience=3):
-    """Trains for a number of epochs, stopping early if val QWK stops improving."""
+                     num_epochs, stage_name, patience=3, resume_path=None):
+    """
+    Trains for a number of epochs, stopping early if val QWK stops improving.
+
+    Saves a full resumable checkpoint (model + optimizer + scheduler + epoch
+    number + best QWK so far) after EVERY epoch to
+    checkpoint_{stage_name}.pt - not just when QWK improves. If training
+    crashes (memory error, power loss, etc), re-running with the same
+    resume_path picks up from the last completed epoch instead of starting
+    Stage 1 over from scratch.
+    """
     best_qwk = -1
     epochs_no_improve = 0
+    start_epoch = 0
 
-    # Reduces LR by half if val QWK hasn't improved for 2 epochs - often
-    # squeezes out extra gains right before you'd otherwise plateau/stop.
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
     )
 
-    for epoch in range(num_epochs):
+    checkpoint_path = f"checkpoint_{stage_name}.pt"
+
+    # ---- Resume from a previous crash/interruption if a checkpoint exists ----
+    if resume_path and os.path.exists(resume_path):
+        print(f"Found existing checkpoint at {resume_path} - resuming...")
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        start_epoch = checkpoint["epoch"] + 1
+        best_qwk = checkpoint["best_qwk"]
+        epochs_no_improve = checkpoint["epochs_no_improve"]
+        print(f"Resuming {stage_name} from epoch {start_epoch + 1}, "
+              f"best QWK so far: {best_qwk:.4f}")
+
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         running_loss = 0.0
 
@@ -86,14 +110,34 @@ def train_one_stage(model, train_loader, val_loader, optimizer, criterion,
             torch.save(model.state_dict(), f"best_model_{stage_name}.pt")
         else:
             epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                print(f"Early stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
-                break
+
+        # Save a full resumable checkpoint every epoch, regardless of
+        # whether this epoch improved - this is what makes resuming possible
+        torch.save({
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "best_qwk": best_qwk,
+            "epochs_no_improve": epochs_no_improve,
+        }, checkpoint_path)
+
+        if epochs_no_improve >= patience:
+            print(f"Early stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+            break
+
+    # Training finished normally (not crashed) - clean up the resume
+    # checkpoint so a future fresh run doesn't accidentally resume from it
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
 
     return model, best_qwk
 
 
 if __name__ == "__main__":
+    import sys
+    USE_BEN_GRAHAM = "--ben_graham" in sys.argv
+
     # ---- Data ----
     # Combines APTOS + DDR into one pool for training, since both use the
     # same 5-class ICDR grading scale. Stratified 85/15 split for validation.
@@ -112,14 +156,37 @@ if __name__ == "__main__":
     train_df, val_df = train_test_split(
         combined_df, test_size=0.15, stratify=combined_df["label"], random_state=42
     )
+
     train_df.to_csv("labels/combined_train_split.csv", index=False)
     val_df.to_csv("labels/combined_val_split.csv", index=False)
 
-    train_dataset = DRDataset("labels/combined_train_split.csv", transform=get_train_transforms())
-    val_dataset = DRDataset("labels/combined_val_split.csv", transform=get_eval_transforms())
+    train_image_size = 224
+    train_dataset = DRDataset("labels/combined_train_split.csv", transform=get_train_transforms(),
+                               image_size=train_image_size, use_ben_graham=USE_BEN_GRAHAM)
+    val_dataset = DRDataset("labels/combined_val_split.csv", transform=get_eval_transforms(),
+                             image_size=train_image_size, use_ben_graham=USE_BEN_GRAHAM)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
+    # WeightedRandomSampler is OFF by default now - a prior run showed it
+    # made T1 (Mild) accuracy WORSE (56.8% -> 45.9%) instead of better,
+    # likely from overfitting to repeatedly-oversampled rare-class images.
+    # Pass --sampler to re-enable it if you want to test it again with
+    # different settings (e.g. capped oversampling instead of pure inverse
+    # frequency).
+    USE_SAMPLER = "--sampler" in sys.argv
+
+    if USE_SAMPLER:
+        from torch.utils.data import WeightedRandomSampler
+        train_labels = train_df["label"].values
+        class_sample_counts = np.array([len(np.where(train_labels == c)[0]) for c in range(5)])
+        sample_weights = 1.0 / class_sample_counts[train_labels]
+        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, num_workers=2)
+        print("Using WeightedRandomSampler")
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
+        print("Using plain shuffled sampling (no oversampling) - loss weighting only")
+
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
 
     # ---- Class weights for imbalance (computed on the training split only) ----
     class_weights = get_class_weights("labels/combined_train_split.csv").to(device)
@@ -130,17 +197,17 @@ if __name__ == "__main__":
 
     # ---- Stage 1: frozen backbone, higher LR on head only ----
     model = freeze_backbone(model)
-    optimizer_stage1 = torch.optim.Adam(model.fc.parameters(), lr=1e-3)
+    optimizer_stage1 = torch.optim.Adam(model.fc.parameters(), lr=1e-3, weight_decay=5e-4)
     model, _ = train_one_stage(model, train_loader, val_loader, optimizer_stage1,
                                 criterion, num_epochs=5, stage_name="stage1")
 
     # ---- Stage 2: unfreeze deeper layers, lower LR across all trainable params ----
     model = unfreeze_backbone(model, unfreeze_from_layer="layer2")
     optimizer_stage2 = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5
+        filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5, weight_decay=5e-4
     )
     model, best_qwk = train_one_stage(model, train_loader, val_loader, optimizer_stage2,
-                                       criterion, num_epochs=30, stage_name="stage2", patience=6)
+                                       criterion, num_epochs=60, stage_name="stage2", patience=8)
 
     print(f"Best validation QWK: {best_qwk:.4f}")
     print("Note: this run used a combined APTOS+DDR train/val split. Add IDRiD "
