@@ -5,6 +5,7 @@ reports Accuracy, Quadratic Weighted Kappa (QWK), and AUC.
 Usage:
     python test.py                              # defaults to aptos_val_split.csv
     python test.py labels/idrid_test_labels.csv  # or point at any other labeled CSV
+    python test.py --grad-cam-dir gradcam --grad-cam-limit 25
 """
 
 import sys
@@ -15,6 +16,7 @@ from sklearn.metrics import accuracy_score, cohen_kappa_score, roc_auc_score, co
 import torch.nn.functional as F
 
 from dataset import DRDataset, get_eval_transforms
+from grad_cam import generate_gradcam
 from model import build_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -114,7 +116,26 @@ if __name__ == "__main__":
     # to check performance on one dataset in isolation, or at
     # labels/idrid_test_labels.csv once IDRiD is downloaded for a true
     # cross-population held-out test.
-    test_csv = sys.argv[1] if len(sys.argv) > 1 else "labels/combined_val_split.csv"
+    test_csv = "labels/combined_val_split.csv"
+    grad_cam_dir = None
+    grad_cam_limit = None
+    positional_args = []
+
+    index = 1
+    while index < len(sys.argv):
+        argument = sys.argv[index]
+        if argument == "--grad-cam-dir":
+            grad_cam_dir = sys.argv[index + 1]
+            index += 2
+        elif argument == "--grad-cam-limit":
+            grad_cam_limit = int(sys.argv[index + 1])
+            index += 2
+        else:
+            positional_args.append(argument)
+            index += 1
+
+    if positional_args:
+        test_csv = positional_args[0]
     checkpoint = "best_model_stage2.pt"
 
     print(f"Loading model from {checkpoint}...")
@@ -129,3 +150,15 @@ if __name__ == "__main__":
 
     metrics = compute_metrics(y_true, y_pred, y_probs)
     print_report(metrics, y_true, y_pred)
+
+    if grad_cam_dir:
+        print(f"Generating Grad-CAM explanations in {grad_cam_dir}...")
+        generated = generate_gradcam(
+            model,
+            test_dataset.df,
+            get_eval_transforms(),
+            device,
+            grad_cam_dir,
+            limit=grad_cam_limit,
+        )
+        print(f"Generated {generated} Grad-CAM explanation(s).")
