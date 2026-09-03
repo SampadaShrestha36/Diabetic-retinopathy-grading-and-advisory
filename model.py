@@ -64,3 +64,26 @@ if __name__ == "__main__":
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable params: {trainable_params:,} / {total_params:,}")
+
+# ==================== EfficientNet-B0 ====================
+def build_model_efficientnet(num_classes=5, pretrained=True):
+    from torchvision import models
+    import torch.nn as nn
+    model = models.efficientnet_b0(weights="IMAGENET1K_V1" if pretrained else None)
+    model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+    return model
+
+def freeze_backbone_efficientnet(model):
+    for name, param in model.named_parameters():
+        if "classifier" not in name:
+            param.requires_grad = False
+    return model
+
+def unfreeze_backbone_efficientnet(model, unfreeze_from_block="features.5"):
+    unfreeze = False
+    for name, param in model.named_parameters():
+        if unfreeze_from_block in name:
+            unfreeze = True
+        if unfreeze:
+            param.requires_grad = True
+    return model
