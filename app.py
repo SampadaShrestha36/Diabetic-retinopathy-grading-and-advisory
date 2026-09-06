@@ -2,6 +2,18 @@
 Gradio app: upload a fundus image, get a DR severity grade and a Grad-CAM
 explanation of which regions drove the prediction.
 
+Preprocessing mirrors preprocessing.py's preprocess_image exactly (this
+app calls it directly rather than reimplementing any step): load -> RGB
+convert -> circular_crop -> quality check (blur/darkness) -> CLAHE or Ben
+Graham enhancement -> resize to 224x224.
+
+IMPORTANT: set USE_BEN_GRAHAM below to whatever value you actually passed
+to train.py's --ben_graham flag when training best_model_stage2.pt. If
+the checkpoint was trained with Ben Graham enhancement but this app runs
+CLAHE instead (or vice versa), the model sees systematically different
+inputs at inference than it learned on, which can quietly hurt accuracy
+with no error or warning.
+
 (Monte Carlo Dropout uncertainty removed for now — your current model.py
 has no dropout layers, so that part needed a modified architecture. Add
 it back later once you're ready to revisit that.)
@@ -21,6 +33,11 @@ from grad_cam import GradCAM
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CHECKPOINT_PATH = "best_model_stage2.pt"
+
+# Must match whichever flag value was used when this checkpoint was
+# trained (train.py's --ben_graham). False = CLAHE (preprocess_image's
+# default), True = Ben Graham local-average subtraction.
+USE_BEN_GRAHAM = False
 
 GRADE_NAMES = {
     0: "No DR",
@@ -65,7 +82,7 @@ def predict(image_path):
     if image_path is None:
         return None, "Please upload a fundus image.", None
 
-    image = preprocess_image(image_path, size=224)
+    image = preprocess_image(image_path, size=224, use_ben_graham=USE_BEN_GRAHAM)
     if image is None:
         return None, "Image failed quality checks (unreadable or too low quality).", None
 
